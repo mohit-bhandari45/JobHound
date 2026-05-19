@@ -1,0 +1,11 @@
+tasks:
+  install:
+    command: uv sync
+  dev:
+    command: uv run fastapi dev --host 0.0.0.0 --port 4000
+    options:
+      persistent: true
+  start:
+    command: uv run fastapi dev --host 0.0.0.0
+    options:
+      persistent: true

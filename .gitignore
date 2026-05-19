@@ -45,3 +45,7 @@ __pycache__/
 .venv/
 env/
 venv/
+
+# moon
+.moon/cache
+.moon/docker

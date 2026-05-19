@@ -1,0 +1,11 @@
+tasks:
+  install:
+    command: bun install
+  dev:
+    command: bun run dev
+    options:
+      persistent: true
+  start:
+    command: bun run preview
+    options:
+      persistent: true
