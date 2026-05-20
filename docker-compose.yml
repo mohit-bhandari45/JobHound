@@ -1,0 +1,57 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: jobhound-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - jobhound-network
+
+  server:
+    build:
+      context: apps/server
+      dockerfile: Dockerfile.dev
+    container_name: jobhound-server
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./apps/server:/app
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/postgres
+    depends_on:
+      - db
+    networks:
+      - jobhound-network
+
+  web:
+    build:
+      context: apps/web
+      dockerfile: Dockerfile.dev
+    container_name: jobhound-web
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+    environment:
+      - API_URL=http://server:8000
+    depends_on:
+      - server
+    networks:
+      - jobhound-network
+
+volumes:
+  postgres_data:
+
+networks:
+  jobhound-network:
+    driver: bridge
