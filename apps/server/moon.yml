@@ -9,3 +9,7 @@ tasks:
     command: uv run fastapi dev --host 0.0.0.0
     options:
       persistent: true
+  migrate:
+    command: uv run alembic upgrade head
+  makemigrations:
+    command: uv run alembic revision --autogenerate -m
