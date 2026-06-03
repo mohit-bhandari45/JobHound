@@ -195,15 +195,24 @@ async def applyJob(startupId: str, jobListingId: str, questionAnswers: list[JobQ
 
 
 
-def extract_pdf_text(filepath: str) -> str:
+def extractDocument(filepath: str) -> str:
     path = Path(filepath).expanduser().resolve()
-    pages = []
-    with pdfplumber.open(str(path)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text(layout=True, x_tolerance=2, y_tolerance=3)
-            if text:
-                pages.append(text)
-    raw = "\n".join(pages).strip()
+    suffix = path.suffix.lower()
+
+    if suffix == ".pdf":
+        pages = []
+        with pdfplumber.open(str(path)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text(layout=True, x_tolerance=2, y_tolerance=3)
+                if text:
+                    pages.append(text)
+        raw = "\n".join(pages).strip()
+
+    elif suffix in (".md", ".txt", ""):
+        raw = path.read_text(encoding="utf-8").strip()
+
+    else:
+        raise ValueError(f"Unsupported file type: {suffix!r}")
 
     replacements = {
         "\u2014": "-",
@@ -214,11 +223,15 @@ def extract_pdf_text(filepath: str) -> str:
         "\ufb03": "ffi",
         "\ufb04": "ffl",
         "\u00a0": " ",
-        "shubhamtw--/": "shubhamtw----/",
     }
     for bad, good in replacements.items():
         raw = raw.replace(bad, good)
+
     return raw
+
+
+
+
 
 
 def ollama_cloud_chat(user_prompt: str, system_prompt: str, api_key: str, model: str = "gpt-oss:120b-cloud") -> str:
@@ -523,7 +536,7 @@ if __name__ == '__main__':
     load_dotenv()
     log = setup_logging()
     resumePath = os.getenv("RESUME_PATH") or ""
-    resumeContents = extract_pdf_text(resumePath)
+    resumeContents = extractDocument(resumePath)
 
     try:
         asyncio.run(main())

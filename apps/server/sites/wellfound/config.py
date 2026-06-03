@@ -138,7 +138,8 @@ LOCATION_IDS: dict[str, str] = {
     "india": "1647",
 }
 
-if sys.argv[1] == "update_session":
-    print(_config_dir)
-    curl_input = pyperclip.paste()
-    update_session_from_curl(curl_input)
+if __name__ == "__main__":
+    if sys.argv[1] == "update_session":
+        print(_config_dir)
+        curl_input = pyperclip.paste()
+        update_session_from_curl(curl_input)
