@@ -195,15 +195,24 @@ async def applyJob(startupId: str, jobListingId: str, questionAnswers: list[JobQ
 
 
 
-def extract_pdf_text(filepath: str) -> str:
+def extractDocument(filepath: str) -> str:
     path = Path(filepath).expanduser().resolve()
-    pages = []
-    with pdfplumber.open(str(path)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text(layout=True, x_tolerance=2, y_tolerance=3)
-            if text:
-                pages.append(text)
-    raw = "\n".join(pages).strip()
+    suffix = path.suffix.lower()
+
+    if suffix == ".pdf":
+        pages = []
+        with pdfplumber.open(str(path)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text(layout=True, x_tolerance=2, y_tolerance=3)
+                if text:
+                    pages.append(text)
+        raw = "\n".join(pages).strip()
+
+    elif suffix in (".md", ".txt", ""):
+        raw = path.read_text(encoding="utf-8").strip()
+
+    else:
+        raise ValueError(f"Unsupported file type: {suffix!r}")
 
     replacements = {
         "\u2014": "-",
@@ -214,11 +223,12 @@ def extract_pdf_text(filepath: str) -> str:
         "\ufb03": "ffi",
         "\ufb04": "ffl",
         "\u00a0": " ",
-        "shubhamtw--/": "shubhamtw----/",
     }
     for bad, good in replacements.items():
         raw = raw.replace(bad, good)
+
     return raw
+
 
 
 def ollama_cloud_chat(user_prompt: str, system_prompt: str, api_key: str, model: str = "gpt-oss:120b-cloud") -> str:
@@ -251,6 +261,35 @@ def ollama_cloud_chat(user_prompt: str, system_prompt: str, api_key: str, model:
         raise
     except Exception as e:
         raise LLMError(f"LLM request failed: {e}") from e
+
+
+def score_cv_jd_match(cv: str, job_desc: str, api_key: str) -> MatchResult:
+    user_prompt = f"""## CV (Markdown)
+{cv}
+
+## Job Description
+{job_desc}
+
+Evaluate the match and respond with the JSON object.
+        """
+    raw = ollama_cloud_chat(
+        user_prompt=user_prompt,
+        system_prompt=SCORESYS_SYSTEM_PROMPT,
+        api_key=api_key,
+    )
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"LLM returned non-JSON response: {e}\nRaw: {raw}") from e
+
+    return MatchResult(
+        score=int(data["score"]),
+        reasoning=data["reasoning"],
+        strengths=data.get("strengths", []),
+        gaps=data.get("gaps", []),
+    )
 
 
 def getJobResponses(questions: list[JobApplicationQuestion], resumeContents: str, jobDesc: str) -> list[dict]:
@@ -408,6 +447,7 @@ async def runBot(role: str, location: str | None = None, maxPages : int = 5):
     locationName = location if (location != None) else "Worldwide"
     print(f"Gonna run Bot for role: {role}, with location: {locationName} for: MAX {maxPages} pages")
 
+    #get jobs list 
     jobs = await getJobs(roleId= role_id, locationId= location_id, maxPages=maxPages, roleName=role, locationName=location)
     extractJobEmails(jobs)
     log.info(f"found {len(jobs)} jobs for role='{role}', location='{location or 'worldwide'}'...")
@@ -433,7 +473,19 @@ async def runBot(role: str, location: str | None = None, maxPages : int = 5):
             log.info("status: already applied (job detail), skipping...")
             continue
 
-        log.info("generating responses...")
+    #guardrails: if jd is completely bollocks or unrelated to resume, why even apply? skip 
+        log.info("ATS evaluation for this role...")
+        scoreATS = score_cv_jd_match(resumeContents, job.description, api_key=OLLAMA_API_KEY)
+        log.info("-" * 20)
+
+        if scoreATS.score < PASSING_SCORE_ATS:
+            log.info(f"[SKIP] score {scoreATS.score} below threshold {PASSING_SCORE_ATS}. \nTop gaps: {', '.join(scoreATS.gaps[:3]) or 'n/a'}")
+            continue
+
+        log.info(f"[PASS] proceeding with application. Strengths: {', '.join(scoreATS.strengths[:3]) or 'n/a'}")
+
+    #responses for the questions list asked for the role
+        log.info("\ngenerating responses...")
         try:
             responses: list[JobQuestionAnswer] = jobQuestionsAnswered(
                 question_sets=jobInfo.applicationQuestionSets,
@@ -466,6 +518,7 @@ async def runBot(role: str, location: str | None = None, maxPages : int = 5):
         startupId = job.companyId or ""
         jobId = job.id
 
+    #apply with the answers filled
         log.info("submitting application...")
         try:
             apply_status = await applyJob(
@@ -523,7 +576,7 @@ if __name__ == '__main__':
     load_dotenv()
     log = setup_logging()
     resumePath = os.getenv("RESUME_PATH") or ""
-    resumeContents = extract_pdf_text(resumePath)
+    resumeContents = extractDocument(resumePath)
 
     try:
         asyncio.run(main())

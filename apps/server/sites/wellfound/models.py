@@ -1,5 +1,6 @@
 from typing import List, Optional, TypedDict
 from pydantic import BaseModel, ValidationError
+from dataclasses import dataclass
 
 
 class RemoteConfig(BaseModel):
@@ -264,3 +265,11 @@ class LLMError(Exception):
 
 class SessionExpiredError(Exception):
     pass
+
+
+@dataclass
+class MatchResult:
+    score: int          # 0-100
+    reasoning: str
+    strengths: list[str]
+    gaps: list[str]
