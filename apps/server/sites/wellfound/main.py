@@ -8,13 +8,21 @@ import json
 import colorlog
 import pdfplumber
 
+import asyncio
 import argparse
 import logging
 from datetime import datetime
-from curl_cffi import requests
+from curl_cffi import requests, AsyncSession
 from pydantic import ValidationError
 from dotenv import load_dotenv
 
+
+_session: AsyncSession | None = None
+def get_session() -> AsyncSession:
+    global _session
+    if _session is None:
+        _session = AsyncSession()
+    return _session
 
 
 def setup_logging() -> logging.Logger:
@@ -55,8 +63,9 @@ def setup_logging() -> logging.Logger:
 
 
 
-def getJobs(roleId: str, roleName: str = "", locationId: Optional[str] = None, locationName: str | None = "", maxPages: int = 10) -> list[JobListing]:
+async def getJobs(roleId: str, roleName: str = "", locationId: Optional[str] = None, locationName: str | None = "", maxPages: int = 10) -> list[JobListing]:
     jobs: list[JobListing] = []
+    sess = get_session()
     for page in range(1, maxPages + 1):
         if locationName is not None:
             log.info(f"searching for role({roleName}), location({locationName}), page: {page}")
@@ -82,7 +91,7 @@ def getJobs(roleId: str, roleName: str = "", locationId: Optional[str] = None, l
                 "operationId": "tfe/5f366cd305b4f13cf6098df75f7ff2bb92fa42b9a74cb3a3aec7bdc69c6b051e"
             },
         }
-        resp = requests.post(
+        resp = await sess.post(
             WF_URL,
             headers=WF_HEADERS,
             cookies=WF_COOKIES,
@@ -113,7 +122,7 @@ def getJobs(roleId: str, roleName: str = "", locationId: Optional[str] = None, l
 
 
 
-def getJobInfo(jobId: str) -> JobListingDetail:
+async def getJobInfo(jobId: str) -> JobListingDetail:
     payload = {
         "operationName": "JobApplicationModal",
         "variables": {"jobListingId": jobId},
@@ -121,7 +130,8 @@ def getJobInfo(jobId: str) -> JobListingDetail:
             "operationId": "tfe/f4c70cbe1f045b5c06c22d1dea14819813abd702dd0b213999b3ea8c0538483c"
         },
     }
-    resp = requests.post(
+    sess = get_session()
+    resp = await sess.post(
         url=WF_URL,
         headers=WF_HEADERS,
         cookies=WF_COOKIES,
@@ -144,7 +154,7 @@ def getJobInfo(jobId: str) -> JobListingDetail:
 
 
 
-def applyJob(startupId: str, jobListingId: str, questionAnswers: list[JobQuestionAnswer]) -> int:
+async def applyJob(startupId: str, jobListingId: str, questionAnswers: list[JobQuestionAnswer]) -> int:
     payload = {
         "operationName": "CreateJobApplication",
         "variables": {
@@ -171,7 +181,9 @@ def applyJob(startupId: str, jobListingId: str, questionAnswers: list[JobQuestio
     }
     headers = WF_HEADERS.copy()
     headers["x-apollo-operation-name"] = "CreateJobApplication"
-    resp = requests.post(
+
+    sess = get_session()
+    resp = await sess.post(
         url=WF_URL,
         headers=headers,
         cookies=WF_COOKIES,
@@ -235,11 +247,10 @@ def ollama_cloud_chat(user_prompt: str, system_prompt: str, api_key: str, model:
 
         return r.json()["message"]["content"]
 
-    except requests.exceptions.Timeout:
-        raise LLMError("LLM request timed out")
-    except requests.exceptions.ConnectionError as e:
-        raise LLMError(f"LLM connection failed: {e}")
-
+    except LLMError:
+        raise
+    except Exception as e:
+        raise LLMError(f"LLM request failed: {e}") from e
 
 
 def getJobResponses(questions: list[JobApplicationQuestion], resumeContents: str, jobDesc: str) -> list[dict]:
@@ -378,7 +389,7 @@ def extractJobEmails(jobs: list[JobListing]) -> None:
     log.info(f"wrote {len(matches)} email(s) to {email_path}")
 
 
-def runBot(role: str, location: str | None = None, maxPages : int = 5):
+async def runBot(role: str, location: str | None = None, maxPages : int = 5):
     #input parsing
     role_id = ROLE_IDS.get(role.lower())
     if role_id is None:
@@ -397,7 +408,7 @@ def runBot(role: str, location: str | None = None, maxPages : int = 5):
     locationName = location if (location != None) else "Worldwide"
     print(f"Gonna run Bot for role: {role}, with location: {locationName} for: MAX {maxPages} pages")
 
-    jobs = getJobs(roleId= role_id, locationId= location_id, maxPages=maxPages, roleName=role, locationName=location)
+    jobs = await getJobs(roleId= role_id, locationId= location_id, maxPages=maxPages, roleName=role, locationName=location)
     extractJobEmails(jobs)
     log.info(f"found {len(jobs)} jobs for role='{role}', location='{location or 'worldwide'}'...")
 
@@ -411,7 +422,7 @@ def runBot(role: str, location: str | None = None, maxPages : int = 5):
             continue
 
         try:
-            jobInfo = getJobInfo(job.id)
+            jobInfo = await getJobInfo(job.id)
         except SessionExpiredError:
             raise
         except Exception as e:
@@ -457,7 +468,7 @@ def runBot(role: str, location: str | None = None, maxPages : int = 5):
 
         log.info("submitting application...")
         try:
-            apply_status = applyJob(
+            apply_status = await applyJob(
                 startupId=startupId,
                 jobListingId=jobId,
                 questionAnswers=responses,
@@ -473,10 +484,8 @@ def runBot(role: str, location: str | None = None, maxPages : int = 5):
         log.info("=" * 80)
 
 
-if __name__ == "__main__":
-    load_dotenv()
-    resumePath = os.getenv("RESUME_PATH") or ""
 
+async def main():
     parser = argparse.ArgumentParser(description="Wellfound job application bot")
     parser.add_argument("--role", required=True, help=f"role to apply for. options: {', '.join(ROLE_IDS.keys())}")
     parser.add_argument("--location", default=None, help=f"location filter. options: {', '.join(LOCATION_IDS.keys())} (default: worldwide)")
@@ -484,9 +493,7 @@ if __name__ == "__main__":
     parser.add_argument("--emails-mode", action="store_true", help="only extract emails from job descriptions, skip applying")
     args = parser.parse_args()
 
-    log = setup_logging()
     try:
-        resumeContents = extract_pdf_text(resumePath)
         if args.emails_mode:
             role_id = ROLE_IDS.get(args.role.lower())
             if role_id is None:
@@ -498,14 +505,28 @@ if __name__ == "__main__":
                 if location_id is None:
                     log.error(f"unknown location '{args.location}'. available: {', '.join(LOCATION_IDS.keys())}")
                     raise SystemExit(1)
-            jobs = getJobs(roleId=role_id, locationId=location_id, maxPages=args.maxpages, roleName=args.role, locationName=args.location)
+            jobs = await getJobs(roleId=role_id, locationId=location_id, maxPages=args.maxpages, roleName=args.role, locationName=args.location)
             log.info(f"found {len(jobs)} jobs, extracting emails only...")
             extractJobEmails(jobs)
         else:
-            runBot(role=args.role, location=args.location, maxPages=args.maxpages)
+            await runBot(role=args.role, location=args.location, maxPages=args.maxpages)
     except (LLMError, SessionExpiredError) as e:
         log.error(f"fatal error, stopping: {e}")
         raise SystemExit(1)
+
     except Exception as e:
         log.error(f"unexpected fatal error: {e}", exc_info=True)
         raise SystemExit(1)
+    
+
+if __name__ == '__main__':
+    load_dotenv()
+    log = setup_logging()
+    resumePath = os.getenv("RESUME_PATH") or ""
+    resumeContents = extract_pdf_text(resumePath)
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        log.info("\nstopped by user with KeyboardInterrupt")
+        raise SystemExit(0)

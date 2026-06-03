@@ -4,6 +4,8 @@ import re
 import sys
 from pathlib import Path
 from dotenv import load_dotenv
+import pyperclip
+
 
 load_dotenv()
 
@@ -21,13 +23,15 @@ def _load_headers_and_cookies() -> tuple[dict, dict]:
 
 
 def update_session_from_curl(curl: str) -> None:
-    """
-    Parse a raw curl command string and update config/session.json
-    with the volatile fields that change each session.
-    Usage: uv run config.py update_session '<curl string>'
-    """
+    curl = curl.strip()
+    if not curl.startswith("curl "):
+        raise ValueError("invalid input: must be a curl command starting with 'curl '")
+
     session_path = _config_dir / "session.json"
     session = json.loads(session_path.read_text())
+
+    headers_updated = []
+    cookies_updated = []
 
     # extract headers
     header_pattern = re.compile(r"-H '([^:]+):\s*([^']+)'")
@@ -36,14 +40,13 @@ def update_session_from_curl(curl: str) -> None:
         value = value.strip()
         if key in session["headers"]:
             session["headers"][key] = value
+            headers_updated.append(key)
             print(f"[header] {key} = {value[:60]}...")
 
     # extract cookies from Cookie header
     cookie_match = re.search(r"-H 'Cookie:\s*([^']+)'", curl)
     if not cookie_match:
-        # try double quotes
         cookie_match = re.search(r'-H "Cookie:\s*([^"]+)"', curl)
-
     if cookie_match:
         cookie_str = cookie_match.group(1)
         for part in cookie_str.split(";"):
@@ -55,10 +58,17 @@ def update_session_from_curl(curl: str) -> None:
             v = v.strip()
             if k in session["cookies"]:
                 session["cookies"][k] = v
+                cookies_updated.append(k)
                 print(f"[cookie] {k} = {v[:60]}...")
 
+    if not headers_updated and not cookies_updated:
+        raise ValueError(
+            "curl parsed but nothing matched session.json — "
+            "no known headers or cookies found. is this the right request?"
+        )
+
     session_path.write_text(json.dumps(session, indent=4))
-    print(f"\nsession.json updated")
+    print(f"\nsession.json updated ({len(headers_updated)} headers, {len(cookies_updated)} cookies)")
 
 
 
@@ -128,10 +138,7 @@ LOCATION_IDS: dict[str, str] = {
     "india": "1647",
 }
 
-
-if __name__ == "__main__":
-    if len(sys.argv) < 3 or sys.argv[1] != "update_session":
-        print("usage: uv run config.py update_session '<curl string>'")
-        sys.exit(1)
-    curl_input = sys.argv[2]
+if sys.argv[1] == "update_session":
+    print(_config_dir)
+    curl_input = pyperclip.paste()
     update_session_from_curl(curl_input)

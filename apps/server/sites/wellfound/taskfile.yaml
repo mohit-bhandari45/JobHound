@@ -1,0 +1,159 @@
+version: "3"
+
+
+vars:
+  LOCATION: ""
+  MAXPAGES: "10"
+  EMAILS_MODE: ""
+
+tasks:
+  _check_role:
+    internal: true
+    preconditions:
+      - sh: '[ -n "{{.ROLE}}" ]'
+        msg: |
+
+          ERROR: ROLE is required.
+
+          usage:
+            task {{.TASK}} ROLE="backend engineer" [LOCATION="india"] [MAXPAGES=10] [EMAILS_MODE=1]
+
+          available roles:
+            software engineer, backend engineer, software architect, devops, data engineer, security engineer
+
+          available locations:
+            india  (omit for worldwide)
+
+  run:
+    desc: Run the bot in the current terminal
+    cmds:
+      - task: _check_role
+        vars: { ROLE: '{{.ROLE}}' }
+      - >
+        uv run main.py
+        --role "{{.ROLE}}"
+        {{if .LOCATION}}--location "{{.LOCATION}}"{{end}}
+        --maxpages {{.MAXPAGES}}
+        {{if .EMAILS_MODE}}--emails-mode{{end}}
+
+  runlive:
+    desc: Run the bot in a tmux session with a live log tail
+    deps: [_check_role]
+    cmds:
+      - task: _check_role
+        vars: { ROLE: '{{.ROLE}}' }
+      - |
+        if tmux has-session -t wf 2>/dev/null; then
+          read -p "tmux session 'wf' already exists. kill it? [y/n]: " ans
+          if [ "$ans" = "y" ]; then
+            tmux kill-session -t wf
+            echo "killed existing session"
+          else
+            echo "skipping, session left running"
+            exit 0
+          fi
+        fi
+        tmux new-session -d -s wf -x 220 -y 50
+        tmux split-window -h -t wf
+        tmux send-keys -t wf:0.0 'uv run main.py --role "{{.ROLE}}" {{if .LOCATION}}--location "{{.LOCATION}}"{{end}} --maxpages {{.MAXPAGES}} {{if .EMAILS_MODE}}--emails-mode{{end}}' Enter
+        tmux send-keys -t wf:0.1 'sleep 2 && tail -f $(ls -t logs/*.log | head -1)' Enter
+        tmux attach-session -t wf
+
+  runall:
+    desc: Run all 6 roles in separate tmux windows
+    cmds:
+      - |
+        if tmux has-session -t wf 2>/dev/null; then
+          read -p "tmux session 'wf' already exists. kill it? [y/n]: " ans
+          if [ "$ans" = "y" ]; then
+            tmux kill-session -t wf
+            echo "killed existing session"
+          else
+            echo "skipping, session left running"
+            exit 0
+          fi
+        fi
+        tmux new-session -d -s wf -x 220 -y 50 -n "se"
+        tmux send-keys -t wf:0 'uv run main.py --role "software engineer" --maxpages {{.MAXPAGES}} {{if .EMAILS_MODE}}--emails-mode{{end}}' Enter
+
+        tmux new-window -t wf -n "be"
+        tmux send-keys -t wf:1 'uv run main.py --role "backend engineer" --maxpages {{.MAXPAGES}} {{if .EMAILS_MODE}}--emails-mode{{end}}' Enter
+
+        tmux new-window -t wf -n "sa"
+        tmux send-keys -t wf:2 'uv run main.py --role "software architect" --maxpages {{.MAXPAGES}} {{if .EMAILS_MODE}}--emails-mode{{end}}' Enter
+
+        tmux new-window -t wf -n "dv"
+        tmux send-keys -t wf:3 'uv run main.py --role "devops" --maxpages {{.MAXPAGES}} {{if .EMAILS_MODE}}--emails-mode{{end}}' Enter
+
+        tmux new-window -t wf -n "de"
+        tmux send-keys -t wf:4 'uv run main.py --role "data engineer" --maxpages {{.MAXPAGES}} {{if .EMAILS_MODE}}--emails-mode{{end}}' Enter
+
+        tmux new-window -t wf -n "sec"
+        tmux send-keys -t wf:5 'uv run main.py --role "security engineer" --maxpages {{.MAXPAGES}} {{if .EMAILS_MODE}}--emails-mode{{end}}' Enter
+
+        tmux new-window -t wf -n "logs"
+        tmux send-keys -t wf:6 'sleep 3 && tail -f logs/*.log' Enter
+
+        tmux select-window -t wf:6
+        tmux attach-session -t wf
+
+  compose-emails:
+    desc: Compose cold emails from an extracted email log file
+    preconditions:
+      - sh: '[ -n "{{.FILE}}" ]'
+        msg: |
+
+          ERROR: FILE is required.
+
+          usage:
+            task compose-emails -- FILE=emails/2026_05_14__14_22.log
+    cmds:
+      - |
+        if tmux has-session -t emailmake 2>/dev/null; then
+          read -p "tmux session 'emailmake' already exists. kill it? [y/n]: " ans
+          if [ "$ans" = "y" ]; then
+            tmux kill-session -t emailmake
+            echo "killed existing session"
+          else
+            echo "skipping, session left running"
+            exit 0
+          fi
+        fi
+        tmux new-session -d -s emailmake -x 220 -y 50
+        tmux send-keys -t emailmake:0 "uv run email_composer.py {{.FILE}}" Enter
+        tmux attach-session -t emailmake
+
+  count-accepted:
+    desc: Count accepted applications
+    cmds:
+      - uv run emailcount.py
+
+  update-session:
+    desc: Takes curl from clipboard and extracts cookies (required to do once after running wf bot -> goto browser devtools in wellfound.com after login, check network & copy curl going onto https://wellfound.com/graphql)
+    cmds:
+      - mkdir -p config
+      - uv run config.py update_session 
+
+  tail:
+    desc: Tail the most recent log file
+    cmds:
+      - tail -f $(ls -t logs/*.log | head -1)
+
+  logs:
+    desc: List all log files, newest first
+    cmds:
+      - ls -lt logs/*.log
+
+  clean:
+    desc: Delete all logs and email files
+    cmds:
+      - rm -f logs/*.log
+      - rm -f ./emails/*.log
+      - rm -f ./emails/composed/*.log
+      - rm -f ./emails/composed/*.txt
+
+  kill:
+    desc: Kill tmux sessions 'wf' and 'emailmake'
+    cmds:
+      - tmux kill-session -t wf 2>/dev/null && echo "session 'wf' killed" || echo "no session 'wf' found"
+      - tmux kill-session -t emailmake 2>/dev/null && echo "session 'emailmake' killed" || echo "no session 'emailmake' found"
